@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+botlog.txt
+bot_stderr.txt
+bot_stdout.txt
+my_log.txt
+my_log_verbose.txt
+yarl_test.txt
