@@ -8,3 +8,4 @@ my_log.txt
 my_log_verbose.txt
 yarl_test.txt
 venv/
+data/welcome_config.json

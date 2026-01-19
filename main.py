@@ -38,12 +38,22 @@ class HoneyloveBot(commands.Bot):
             if filename.endswith('.py'):
                 await self.load_extension(f'cogs.{filename[:-3]}')
         
-        # Sync commands with Discord
-        await self.tree.sync()
-        print("Commands synced!")
+
+
 
     async def on_ready(self):
         print(f'Logged in as {self.user} (ID: {self.user.id})')
+        print('------')
+        
+        # Force sync to all guilds for immediate update
+        print("Syncing commands to guilds...")
+        for guild in self.guilds:
+            try:
+                self.tree.copy_global_to(guild=guild) # Optional: copies global commands to guild
+                await self.tree.sync(guild=guild)
+                print(f"Synced commands to {guild.name}")
+            except Exception as e:
+                print(f"Failed to sync to {guild.name}: {e}")
         print('------')
         
         # Send official log message to the logs channel
@@ -68,6 +78,9 @@ class HoneyloveBot(commands.Bot):
             print(f"Sent startup log to #{logs_channel.name}")
         else:
             print(f"Warning: Could not find logs channel with ID {LOGS_CHANNEL_ID}")
+
+
+
 
 async def main():
     bot = HoneyloveBot()

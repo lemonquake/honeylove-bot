@@ -9,6 +9,95 @@ Onboarding Cog - Welcomes new members based on which invite link they used.
 import discord
 from discord.ext import commands
 from datetime import datetime, timezone
+import json
+import os
+from discord import ui, app_commands
+
+DATA_FILE = "./data/welcome_config.json"
+
+class WelcomeEditModal(ui.Modal):
+    def __init__(self, key, config, save_callback):
+        super().__init__(title=f"Edit Welcome Message ({key})")
+        self.key = key
+        self.save_callback = save_callback
+        self.message = ui.TextInput(
+            label="Message Content",
+            style=discord.TextStyle.paragraph,
+            placeholder="Type your welcome message here... Use {user} to mention.",
+            default=config.get("message", ""),
+            max_length=2000,
+            required=True
+        )
+        self.add_item(self.message)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.save_callback(interaction, self.key, self.message.value)
+
+class WelcomeConfigView(ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.selected_key = "Ambassador" # Default
+
+    @discord.ui.select(
+        placeholder="1. Select Audience To Edit",
+        options=[
+            discord.SelectOption(label="Ambassador", value="Ambassador", description="Channel: ambassador-welcome"),
+            discord.SelectOption(label="Creator", value="Creator", description="Channel: creator-welcome"),
+        ],
+        row=0
+    )
+    async def select_callback(self, interaction: discord.Interaction, select: ui.Select):
+        self.selected_key = select.values[0]
+        # Inform user of selection
+        config = self.cog.get_config(self.selected_key)
+        chan_id = config.get("channel_id")
+        chan_text = f"<#{chan_id}>" if chan_id else "Default"
+        await interaction.response.send_message(f"Selected **{self.selected_key}**. Current Channel: {chan_text}", ephemeral=True)
+
+    @discord.ui.select(
+        placeholder="2. (Optional) Change Target Channel",
+        cls=ui.ChannelSelect,
+        channel_types=[discord.ChannelType.text],
+        row=1
+    )
+    async def channel_callback(self, interaction: discord.Interaction, select: ui.ChannelSelect):
+        channel = select.values[0]
+        await self.cog.save_welcome_channel(interaction, self.selected_key, channel.id)
+
+    @discord.ui.button(label="Edit Message", style=discord.ButtonStyle.primary, emoji="✏️", row=2)
+    async def edit_button(self, interaction: discord.Interaction, button: ui.Button):
+        current_config = self.cog.get_config(self.selected_key)
+        modal = WelcomeEditModal(self.selected_key, current_config, self.cog.save_welcome_message)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Test Message", style=discord.ButtonStyle.secondary, emoji="🧪", row=2)
+    async def test_button(self, interaction: discord.Interaction, button: ui.Button):
+        config = self.cog.get_config(self.selected_key)
+        message_template = config.get("message", self.cog.DEFAULT_MESSAGE)
+        
+        # Determine channel to send to
+        channel_id = config.get("channel_id")
+        # Fallback to defaults if not set in config
+        if not channel_id:
+             if self.selected_key == "Ambassador":
+                 channel_id = 1461061865449984105
+             elif self.selected_key == "Creator":
+                 channel_id = 1461062991536460123
+        
+        target_channel = interaction.guild.get_channel(channel_id)
+        
+        formatted_message = message_template.format(
+            user=interaction.user.mention,
+            username=interaction.user.name,
+            server=interaction.guild.name
+        )
+        
+        if target_channel:
+            await target_channel.send(f"**[TEST MESSAGE]**\n{formatted_message}")
+            await interaction.response.send_message(f"✅ Test message sent to {target_channel.mention}!", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"❌ Could not find target channel (ID: {channel_id})", ephemeral=True)
 
 
 class Onboarding(commands.Cog):
@@ -38,13 +127,60 @@ class Onboarding(commands.Cog):
             "role_name": "Creator"
         }
     }
+
+    DEFAULT_MESSAGE = "Hi, {user}! Welcome to Honeylove's Official Discord! Please provide your Tiktok handle in this channel."
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.welcome_config = {}
+        self.load_config()
         # Cache of invites per guild: {guild_id: {invite_code: uses}}
         self.invite_cache = {}
         # Cooldown cache to prevent spamming welcomes if roles are toggled: {member_id: timestamp}
         self.welcome_cooldown = {}
+
+    def load_config(self):
+        if os.path.exists(DATA_FILE):
+            try:
+                with open(DATA_FILE, 'r') as f:
+                    self.welcome_config = json.load(f)
+            except Exception as e:
+                print(f"Error loading welcome config: {e}")
+                self.welcome_config = {}
+        else:
+            self.welcome_config = {}
+
+    def save_config(self):
+        try:
+            with open(DATA_FILE, 'w') as f:
+                json.dump(self.welcome_config, f, indent=4)
+        except Exception as e:
+            print(f"Error saving welcome config: {e}")
+
+    def get_config(self, key):
+        return self.welcome_config.get(key, {})
+
+    async def save_welcome_message(self, interaction: discord.Interaction, key: str, message: str):
+        if key not in self.welcome_config:
+            self.welcome_config[key] = {}
+        
+        self.welcome_config[key]["message"] = message
+        self.save_config()
+        await interaction.response.send_message(f"✅ Welcome message for **{key}** updated!", ephemeral=True)
+
+    async def save_welcome_channel(self, interaction: discord.Interaction, key: str, channel_id: int):
+        if key not in self.welcome_config:
+            self.welcome_config[key] = {}
+            
+        self.welcome_config[key]["channel_id"] = channel_id
+        self.save_config()
+        await interaction.response.send_message(f"✅ Target channel for **{key}** updated to <#{channel_id}>!", ephemeral=True)
+
+    @app_commands.command(name="welcome_settings", description="Configure welcome messages for Ambassador and Creator channels")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def welcome_settings(self, interaction: discord.Interaction):
+        view = WelcomeConfigView(self)
+        await interaction.response.send_message("Please select a channel type to configure:", view=view, ephemeral=True)
     
     async def cache_invites(self, guild: discord.Guild):
         """Cache the current invite uses for a guild."""
@@ -79,11 +215,29 @@ class Onboarding(commands.Cog):
     
     async def send_welcome_message(self, member: discord.Member, config):
         """Helper to send the welcome message."""
-        channel = member.guild.get_channel(config["channel_id"])
+        channel_id = config.get("channel_id")
         
-        # Determine the role name/type for logging
-        role_label = config.get("role_name") or config.get("role_type") or "Unknown"
+        # If channel_id is in the custom config, use it. Otherwise use the hardcoded default from INVITE_CONFIG/ROLE_CONFIG
+        if not channel_id:
+             channel_id = config.get("channel_id") # This refers to the dictionary passed in, not our custom config
 
+        # However, 'config' passed to this function IS from INVITE_CONFIG or ROLE_CONFIG usually.
+        # We need to overlay our custom config.
+        
+        # Determine the key to look up in welcome_config
+        key = "Ambassador" if "Ambassador" in role_label else "Creator" if "Creator" in role_label else role_label
+        # Fallback mapping
+        if key not in ["Ambassador", "Creator"]:
+             if channel_id == 1461061865449984105: key = "Ambassador"
+             elif channel_id == 1461062991536460123: key = "Creator"
+        
+        # Check custom config for channel override
+        custom_config = self.welcome_config.get(key, {})
+        if "channel_id" in custom_config:
+            channel_id = custom_config["channel_id"]
+
+        channel = member.guild.get_channel(channel_id)
+        
         if channel:
             # Check cooldown (avoid spamming if roles are added/removed quickly)
             now = datetime.now(timezone.utc).timestamp()
@@ -91,9 +245,13 @@ class Onboarding(commands.Cog):
             if now - last_welcome < 60: # 1 minute cooldown
                 return
 
-            welcome_message = (
-                f"Hi, {member.mention}! Welcome to Honeylove's Official Discord! "
-                f"Please provide your Tiktok handle in this channel."
+            # Get message from config
+            message_template = self.welcome_config.get(key, {}).get("message", self.DEFAULT_MESSAGE)
+            
+            welcome_message = message_template.format(
+                user=member.mention,
+                username=member.name,
+                server=member.guild.name
             )
             
             try:
